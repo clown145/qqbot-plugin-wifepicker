@@ -63,10 +63,8 @@ export async function recordActiveUser(
 ): Promise<void> {
   const now = Date.now()
   await db.run(
-    `INSERT INTO {active_users} (group_id, user_id, username, last_seen)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(group_id, user_id)
-     DO UPDATE SET username = excluded.username, last_seen = excluded.last_seen;`,
+    `INSERT OR REPLACE INTO {active_users} (group_id, user_id, username, last_seen)
+     VALUES (?, ?, ?, ?);`,
     groupId,
     userId,
     username,
@@ -198,10 +196,8 @@ export async function setCooldown(
   expireAt: number,
 ): Promise<void> {
   await db.run(
-    `INSERT INTO {cooldowns} (group_id, user_id, cd_type, expire_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(group_id, user_id, cd_type)
-     DO UPDATE SET expire_at = excluded.expire_at;`,
+    `INSERT OR REPLACE INTO {cooldowns} (group_id, user_id, cd_type, expire_at)
+     VALUES (?, ?, ?, ?);`,
     groupId,
     userId,
     type,

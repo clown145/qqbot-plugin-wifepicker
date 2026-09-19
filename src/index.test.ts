@@ -16,7 +16,7 @@ function createMemoryDB(): ScopedDB {
     exec: async () => {},
     run: async (sql, ...params) => {
       // 1. active_users 插入/更新
-      if (sql.includes('INSERT INTO {active_users}')) {
+      if (sql.includes('{active_users}') && sql.includes('INSERT')) {
         const [groupId, userId, username, lastSeen] = params as [string, string, string, number]
         activeUsers.set(`${groupId}:${userId}`, {
           group_id: groupId,
@@ -77,7 +77,7 @@ function createMemoryDB(): ScopedDB {
       }
 
       // 5. cooldowns 设置
-      if (sql.includes('INSERT INTO {cooldowns}')) {
+      if (sql.includes('{cooldowns}') && sql.includes('INSERT')) {
         const [groupId, userId, cdType, expireAt] = params as [string, string, any, number]
         cooldowns.set(`${groupId}:${userId}:${cdType}`, {
           group_id: groupId,
