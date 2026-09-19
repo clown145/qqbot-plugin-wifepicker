@@ -339,4 +339,48 @@ describe('qqbot-plugin-wifepicker', () => {
     expect(reply.markdown.content).toContain('万人迷')
     expect(reply.markdown.content).toContain('`2` 次')
   })
+
+  it('recordActiveUser 支持内存防抖与昵称变更识别', async () => {
+    const { clearActiveUserCache, recordActiveUser } = await import('./db.js')
+    clearActiveUserCache()
+
+    let writeCount = 0
+    const db: ScopedDB = {
+      table: (n) => `p_wifepicker_${n}`,
+      exec: async () => {},
+      run: async () => {
+        writeCount++
+        return { changes: 1 }
+      },
+      all: async () => [],
+      first: async () => null,
+    }
+
+    // 1. 首次发言：写入 D1
+    const res1 = await recordActiveUser(db, 'group-1', 'user-1', 'Alice', 60 * 1000)
+    expect(res1).toBe(true)
+    expect(writeCount).toBe(1)
+
+    // 2. 冷却期内同用户同昵称再次发言：防抖拦截，不写 D1
+    const res2 = await recordActiveUser(db, 'group-1', 'user-1', 'Alice', 60 * 1000)
+    expect(res2).toBe(false)
+    expect(writeCount).toBe(1)
+
+    // 3. 同用户更改昵称发言：立即刷新 D1
+    const res3 = await recordActiveUser(db, 'group-1', 'user-1', 'AliceNew', 60 * 1000)
+    expect(res3).toBe(true)
+    expect(writeCount).toBe(2)
+
+    // 4. 不同群友发言：独立记录
+    const res4 = await recordActiveUser(db, 'group-1', 'user-2', 'Bob', 60 * 1000)
+    expect(res4).toBe(true)
+    expect(writeCount).toBe(3)
+
+    // 5. 清理缓存后再次发言：重新写入 D1
+    clearActiveUserCache()
+    const res5 = await recordActiveUser(db, 'group-1', 'user-1', 'AliceNew', 60 * 1000)
+    expect(res5).toBe(true)
+    expect(writeCount).toBe(4)
+  })
 })
+

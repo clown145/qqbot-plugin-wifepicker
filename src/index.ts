@@ -65,6 +65,20 @@ export default definePlugin<WifePickerConfig>({
         items: { type: 'string' },
         default: [],
       },
+      active_user_throttle_minutes: {
+        type: 'integer',
+        title: '活跃成员刷库防抖间隔（分钟）',
+        description: '同一群友在此时间内的重复发言不会写入 D1，大幅节省数据库写入配额。默认 60 分钟。',
+        default: 60,
+        minimum: 1,
+        maximum: 1440,
+      },
+      only_record_at_message: {
+        type: 'boolean',
+        title: '仅记录 @机器人的消息',
+        description: '开启后只记录 @机器人的群友作为活跃成员，忽略普通群聊水群消息，极大节省写入额度。默认关闭。',
+        default: false,
+      },
     },
     required: ['daily_limit', 'force_marry_cd_days', 'active_user_days'],
   },
@@ -80,6 +94,8 @@ export default definePlugin<WifePickerConfig>({
     auto_set_other_half: false,
     excluded_users: [],
     force_marry_excluded_users: [],
+    active_user_throttle_minutes: 60,
+    only_record_at_message: false,
     whitelist_groups: [],
     blacklist_groups: [],
   },
@@ -94,15 +110,20 @@ export default definePlugin<WifePickerConfig>({
   },
 
   events: {
-    // 监听群消息与 @消息，持续静默维护活跃群友池
+    // 监听群消息与 @消息，持续静默维护活跃群友池（防抖写入 D1）
     'qq.group.at_message': async ({ session, ctx }) => {
       if (session.scene === 'group' && session.targetId && session.userId) {
-        await recordActiveUser(ctx.db, session.targetId, session.userId, session.userName || '群友')
+        if (!isGroupAllowed(session.targetId, ctx.config)) return
+        const throttleMs = (ctx.config.active_user_throttle_minutes || 60) * 60 * 1000
+        ctx.waitUntil(recordActiveUser(ctx.db, session.targetId, session.userId, session.userName || '群友', throttleMs))
       }
     },
     'qq.group.message': async ({ session, ctx }) => {
+      if (ctx.config.only_record_at_message) return
       if (session.scene === 'group' && session.targetId && session.userId) {
-        await recordActiveUser(ctx.db, session.targetId, session.userId, session.userName || '群友')
+        if (!isGroupAllowed(session.targetId, ctx.config)) return
+        const throttleMs = (ctx.config.active_user_throttle_minutes || 60) * 60 * 1000
+        ctx.waitUntil(recordActiveUser(ctx.db, session.targetId, session.userId, session.userName || '群友', throttleMs))
       }
     },
   },

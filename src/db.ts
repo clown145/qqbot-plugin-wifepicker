@@ -37,9 +37,29 @@ export async function initSchema(db: ScopedDB): Promise<void> {
   `)
 }
 
-/** 惰性清理过期数据（在指令触发时顺带执行，避免全表膨胀） */
+// 内存防抖缓存：groupId:userId -> { lastSeen: number, username: string }
+const activeCache = new Map<string, { lastSeen: number; username: string }>()
+const MAX_CACHE_SIZE = 5000
+
+/** 清空活跃成员内存防抖缓存（主要供单测调用） */
+export function clearActiveUserCache(): void {
+  activeCache.clear()
+}
+
+let lastCleanupTime = 0
+const CLEANUP_THROTTLE_MS = 10 * 60 * 1000 // 惰性清理防抖：10 分钟最多执行一次
+
+/** 重置惰性清理防抖时间戳（供单测使用） */
+export function resetCleanupThrottle(): void {
+  lastCleanupTime = 0
+}
+
+/** 惰性清理过期数据（在指令触发时顺带执行，避免全表膨胀；内置 10 分钟防抖，避免高频并发重复清理） */
 export async function lazyCleanup(db: ScopedDB, activeDays: number): Promise<void> {
   const now = Date.now()
+  if (now - lastCleanupTime < CLEANUP_THROTTLE_MS) return
+  lastCleanupTime = now
+
   const oneDayAgo = now - 86400 * 1000
   const activeLimit = now - activeDays * 86400 * 1000
   const thirtyDaysAgo = now - 30 * 86400 * 1000
@@ -54,14 +74,35 @@ export async function lazyCleanup(db: ScopedDB, activeDays: number): Promise<voi
   await db.run('DELETE FROM {active_users} WHERE last_seen < ?', activeLimit)
 }
 
-/** 更新/记录群成员活跃状态与最新昵称 */
+/**
+ * 更新/记录群成员活跃状态与最新昵称。
+ * 支持内存防抖：同一群友在 throttleMs（默认 60 分钟）内的重复发言且昵称未改变时，直接跳过 D1 写入，极大节省写入额度。
+ * @returns 是否实际触发了 D1 写入
+ */
 export async function recordActiveUser(
   db: ScopedDB,
   groupId: string,
   userId: string,
   username: string,
-): Promise<void> {
+  throttleMs: number = 60 * 60 * 1000,
+): Promise<boolean> {
   const now = Date.now()
+  const key = `${groupId}:${userId}`
+  const cached = activeCache.get(key)
+
+  // 命中防抖：冷却期内且昵称无变化，跳过 D1 写入
+  if (cached && now - cached.lastSeen < throttleMs && cached.username === username) {
+    return false
+  }
+
+  // 缓存容量保护，超出时淘汰最早加入的条目
+  if (activeCache.size >= MAX_CACHE_SIZE) {
+    const firstKey = activeCache.keys().next().value
+    if (firstKey) activeCache.delete(firstKey)
+  }
+
+  activeCache.set(key, { lastSeen: now, username })
+
   await db.run(
     `INSERT OR REPLACE INTO {active_users} (group_id, user_id, username, last_seen)
      VALUES (?, ?, ?, ?);`,
@@ -70,6 +111,7 @@ export async function recordActiveUser(
     username,
     now,
   )
+  return true
 }
 
 /** 获取用户今日的老婆记录 */
