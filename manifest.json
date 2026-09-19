@@ -1,0 +1,230 @@
+{
+  "name": "wifepicker",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "permissions": [
+    "db",
+    "kv"
+  ],
+  "depends": {},
+  "conflicts": [],
+  "commands": [
+    {
+      "name": "今日老婆",
+      "aliases": [
+        "抽老婆",
+        "jrlp",
+        "dailywife",
+        "wife"
+      ],
+      "description": "随机抽取一名近期的活跃群友作为今日老婆"
+    },
+    {
+      "name": "我的老婆",
+      "aliases": [
+        "抽取历史",
+        "wdlp",
+        "mywife"
+      ],
+      "description": "查看今日已抽取的老婆记录"
+    },
+    {
+      "name": "强娶",
+      "aliases": [
+        "qiangqu",
+        "forcemarry"
+      ],
+      "description": "消耗强娶冷却，强行将群友纳为今日老婆：/强娶 @群友"
+    },
+    {
+      "name": "挑选老婆",
+      "aliases": [
+        "txlp",
+        "pickwife"
+      ],
+      "description": "从随机抽取的 3 位候选人中选择一位成为今日老婆"
+    },
+    {
+      "name": "求婚",
+      "aliases": [
+        "qh",
+        "propose"
+      ],
+      "description": "向指定的群友发起浪漫求婚：/求婚 @群友"
+    },
+    {
+      "name": "分手",
+      "aliases": [
+        "fs",
+        "breakup",
+        "离婚"
+      ],
+      "description": "解除非强娶建立的老婆关系，进入 72 小时冷静期"
+    },
+    {
+      "name": "rbq排行",
+      "aliases": [
+        "rbqph",
+        "wifeleaderboard"
+      ],
+      "description": "查看本群最近 30 天被强娶次数最多的 Top 10 群友"
+    },
+    {
+      "name": "重置记录",
+      "aliases": [
+        "czjl"
+      ],
+      "description": "管理员重置本群今日所有老婆抽取记录"
+    },
+    {
+      "name": "重置强娶时间",
+      "aliases": [
+        "czqqsj"
+      ],
+      "description": "管理员重置本群所有群友的强娶冷却"
+    },
+    {
+      "name": "重置求婚时间",
+      "aliases": [
+        "czqhsj"
+      ],
+      "description": "管理员重置本群所有群友的求婚冷却"
+    },
+    {
+      "name": "抽老婆帮助",
+      "aliases": [
+        "clpbz",
+        "wifehelp",
+        "老婆插件帮助"
+      ],
+      "description": "查看抽老婆插件全部指令指南"
+    }
+  ],
+  "regex": [],
+  "events": [
+    {
+      "event": [
+        "qq.group.at_message"
+      ]
+    },
+    {
+      "event": [
+        "qq.group.message"
+      ]
+    }
+  ],
+  "buttons": [
+    {
+      "id": "pick_select"
+    },
+    {
+      "id": "pick_cancel"
+    },
+    {
+      "id": "propose_btn"
+    }
+  ],
+  "cron": [],
+  "routes": [],
+  "hasMiddleware": false,
+  "services": [],
+  "durableObjects": [],
+  "displayName": "今日老婆",
+  "description": "抽取活跃群友当老婆，支持强娶、挑选、求婚与被强娶排行，D1 存储与自动惰性清理",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "daily_limit": {
+        "type": "number",
+        "title": "每日抽取次数上限",
+        "default": 1
+      },
+      "force_marry_cd_days": {
+        "type": "number",
+        "title": "强娶冷却天数",
+        "default": 3
+      },
+      "propose_cd_minutes": {
+        "type": "number",
+        "title": "求婚冷却分钟数",
+        "default": 60
+      },
+      "breakup_cd_hours": {
+        "type": "number",
+        "title": "分手冷静期小时数",
+        "default": 72
+      },
+      "active_user_days": {
+        "type": "number",
+        "title": "活跃群友筛选天数",
+        "default": 30
+      },
+      "pick_candidate_count": {
+        "type": "number",
+        "title": "挑选老婆候选人数",
+        "default": 3
+      },
+      "at_waifu": {
+        "type": "boolean",
+        "title": "结果是否额外 @对方",
+        "default": false
+      },
+      "auto_set_other_half": {
+        "type": "boolean",
+        "title": "自动互设对方为老婆（双向绑定）",
+        "default": false
+      },
+      "excluded_users": {
+        "type": "array",
+        "title": "抽取排除用户 OpenID 列表",
+        "items": {
+          "type": "string"
+        },
+        "default": []
+      },
+      "force_marry_excluded_users": {
+        "type": "array",
+        "title": "强娶排除用户 OpenID 列表",
+        "items": {
+          "type": "string"
+        },
+        "default": []
+      },
+      "whitelist_groups": {
+        "type": "array",
+        "title": "白名单群列表（为空则不限制）",
+        "items": {
+          "type": "string"
+        },
+        "default": []
+      },
+      "blacklist_groups": {
+        "type": "array",
+        "title": "黑名单群列表",
+        "items": {
+          "type": "string"
+        },
+        "default": []
+      }
+    },
+    "required": [
+      "daily_limit",
+      "force_marry_cd_days",
+      "active_user_days"
+    ]
+  },
+  "defaultConfig": {
+    "daily_limit": 1,
+    "force_marry_cd_days": 3,
+    "propose_cd_minutes": 60,
+    "breakup_cd_hours": 72,
+    "active_user_days": 30,
+    "pick_candidate_count": 3,
+    "at_waifu": false,
+    "auto_set_other_half": false,
+    "excluded_users": [],
+    "force_marry_excluded_users": [],
+    "whitelist_groups": [],
+    "blacklist_groups": []
+  }
+}

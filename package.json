@@ -1,0 +1,25 @@
+{
+  "name": "qqbot-plugin-wifepicker",
+  "version": "0.1.0",
+  "description": "QQ 机器人今日老婆与群友互动插件",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "qqbot-plugin"
+  ],
+  "scripts": {
+    "build": "qqbot-plugin build",
+    "sync": "qqbot-plugin build && node -e \"require('node:fs').copyFileSync('dist/manifest.json','manifest.json')\"",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250917.0",
+    "@qqbot/plugin-cli": "file:../qqbot-workers/packages/plugin-cli",
+    "@qqbot/sdk": "file:../qqbot-workers/packages/sdk",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
