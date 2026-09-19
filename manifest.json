@@ -1,6 +1,6 @@
 {
   "name": "wifepicker",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "apiVersion": 1,
   "permissions": [
     "db",
@@ -11,6 +11,7 @@
   "commands": [
     {
       "name": "今日老婆",
+      "bare": true,
       "aliases": [
         "抽老婆",
         "jrlp",
@@ -21,6 +22,7 @@
     },
     {
       "name": "我的老婆",
+      "bare": true,
       "aliases": [
         "抽取历史",
         "wdlp",
@@ -30,6 +32,7 @@
     },
     {
       "name": "强娶",
+      "bare": true,
       "aliases": [
         "qiangqu",
         "forcemarry"
@@ -38,6 +41,7 @@
     },
     {
       "name": "挑选老婆",
+      "bare": true,
       "aliases": [
         "txlp",
         "pickwife"
@@ -46,6 +50,7 @@
     },
     {
       "name": "求婚",
+      "bare": true,
       "aliases": [
         "qh",
         "propose"
@@ -54,6 +59,7 @@
     },
     {
       "name": "分手",
+      "bare": true,
       "aliases": [
         "fs",
         "breakup",
@@ -63,6 +69,7 @@
     },
     {
       "name": "rbq排行",
+      "bare": true,
       "aliases": [
         "rbqph",
         "wifeleaderboard"
@@ -74,6 +81,7 @@
       "aliases": [
         "czjl"
       ],
+      "permission": "group_admin",
       "description": "管理员重置本群今日所有老婆抽取记录"
     },
     {
@@ -81,6 +89,7 @@
       "aliases": [
         "czqqsj"
       ],
+      "permission": "group_admin",
       "description": "管理员重置本群所有群友的强娶冷却"
     },
     {
@@ -88,10 +97,12 @@
       "aliases": [
         "czqhsj"
       ],
+      "permission": "group_admin",
       "description": "管理员重置本群所有群友的求婚冷却"
     },
     {
       "name": "抽老婆帮助",
+      "bare": true,
       "aliases": [
         "clpbz",
         "wifehelp",

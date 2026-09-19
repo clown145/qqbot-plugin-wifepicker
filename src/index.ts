@@ -1,7 +1,7 @@
-import { button, definePlugin, keyboard } from '@qqbot/sdk'
+import { button, definePlugin, keyboard, qqAvatar } from '@qqbot/sdk'
 import type { WifePickerConfig } from './types.js'
 import {
-  addRecord,
+  clearActiveUserCache,
   drawCandidates,
   getCooldown,
   getRbqRanking,
@@ -14,14 +14,14 @@ import {
   resetGroupTodayRecords,
   setCooldown,
   upsertForceRecord,
+  addRecord,
 } from './db.js'
 import {
-  extractTargetUser,
   formatRemainingTime,
-  getAvatarUrl,
   getBeijingDateString,
   isGroupAdmin,
   isGroupAllowed,
+  extractTargetUser,
 } from './utils.js'
 
 export default definePlugin<WifePickerConfig>({
@@ -131,6 +131,7 @@ export default definePlugin<WifePickerConfig>({
   commands: {
     // 1. 今日老婆
     '今日老婆': {
+      bare: true,
       aliases: ['抽老婆', 'jrlp', 'dailywife', 'wife'],
       description: '随机抽取一名近期的活跃群友作为今日老婆',
       async handler({ session, ctx }) {
@@ -158,7 +159,7 @@ export default definePlugin<WifePickerConfig>({
         if (todayRecords.length >= dailyLimit) {
           if (dailyLimit === 1) {
             const first = todayRecords[0]!
-            const avatar = getAvatarUrl(ctx.botId, first.wife_id)
+            const avatar = qqAvatar(ctx.botId, first.wife_id)
             return {
               text: `🌸 你今天已经有老婆了：${first.wife_name}，可别太贪心哦~`,
               image: { url: avatar },
@@ -188,7 +189,7 @@ export default definePlugin<WifePickerConfig>({
         }
 
         const remaining = Math.max(0, dailyLimit - todayRecords.length - 1)
-        const avatarUrl = getAvatarUrl(ctx.botId, wife.user_id)
+        const avatarUrl = qqAvatar(ctx.botId, wife.user_id)
         const suffix = remaining > 0 ? ` (今日剩余 ${remaining} 次)` : ''
 
         return {
@@ -200,6 +201,7 @@ export default definePlugin<WifePickerConfig>({
 
     // 2. 我的老婆
     '我的老婆': {
+      bare: true,
       aliases: ['抽取历史', 'wdlp', 'mywife'],
       description: '查看今日已抽取的老婆记录',
       async handler({ session, ctx }) {
@@ -226,13 +228,14 @@ export default definePlugin<WifePickerConfig>({
 
         return {
           text: `🌸 你今天的后宫名单如下：\n${lines.join('\n')}\n\n今日剩余抽取次数：${remaining} 次`,
-          image: { url: getAvatarUrl(ctx.botId, lastWife.wife_id) },
+          image: { url: qqAvatar(ctx.botId, lastWife.wife_id) },
         }
       },
     },
 
     // 3. 强娶
     '强娶': {
+      bare: true,
       aliases: ['qiangqu', 'forcemarry'],
       description: '消耗强娶冷却，强行将群友纳为今日老婆：/强娶 @群友',
       async handler({ session, ctx }) {
@@ -299,13 +302,14 @@ export default definePlugin<WifePickerConfig>({
 
         return {
           text: `💥 恭喜你霸王硬上弓！成功强娶群友【${target.username}】！\n(你已进入 ${ctx.config.force_marry_cd_days} 天强娶冷却期)`,
-          image: { url: getAvatarUrl(ctx.botId, target.userId) },
+          image: { url: qqAvatar(ctx.botId, target.userId) },
         }
       },
     },
 
     // 4. 挑选老婆
     '挑选老婆': {
+      bare: true,
       aliases: ['txlp', 'pickwife'],
       description: '从随机抽取的 3 位候选人中选择一位成为今日老婆',
       async handler({ session, ctx }) {
@@ -370,6 +374,7 @@ export default definePlugin<WifePickerConfig>({
 
     // 5. 求婚
     '求婚': {
+      bare: true,
       aliases: ['qh', 'propose'],
       description: '向指定的群友发起浪漫求婚：/求婚 @群友',
       async handler({ session, ctx }) {
@@ -431,6 +436,7 @@ export default definePlugin<WifePickerConfig>({
 
     // 6. 分手
     '分手': {
+      bare: true,
       aliases: ['fs', 'breakup', '离婚'],
       description: '解除非强娶建立的老婆关系，进入 72 小时冷静期',
       async handler({ session, ctx }) {
@@ -464,6 +470,7 @@ export default definePlugin<WifePickerConfig>({
 
     // 7. 被强娶排行
     'rbq排行': {
+      bare: true,
       aliases: ['rbqph', 'wifeleaderboard'],
       description: '查看本群最近 30 天被强娶次数最多的 Top 10 群友',
       async handler({ session, ctx }) {
@@ -492,6 +499,7 @@ export default definePlugin<WifePickerConfig>({
     // 8. 重置记录（管理员）
     '重置记录': {
       aliases: ['czjl'],
+      permission: 'group_admin',
       description: '管理员重置本群今日所有老婆抽取记录',
       async handler({ session, ctx }) {
         if (!isGroupAdmin(session)) return '⛔ 只有群主或管理员才能重置记录哦！'
@@ -504,6 +512,7 @@ export default definePlugin<WifePickerConfig>({
     // 9. 重置强娶时间（管理员）
     '重置强娶时间': {
       aliases: ['czqqsj'],
+      permission: 'group_admin',
       description: '管理员重置本群所有群友的强娶冷却',
       async handler({ session, ctx }) {
         if (!isGroupAdmin(session)) return '⛔ 只有群主或管理员才能执行此操作！'
@@ -515,6 +524,7 @@ export default definePlugin<WifePickerConfig>({
     // 10. 重置求婚时间（管理员）
     '重置求婚时间': {
       aliases: ['czqhsj'],
+      permission: 'group_admin',
       description: '管理员重置本群所有群友的求婚冷却',
       async handler({ session, ctx }) {
         if (!isGroupAdmin(session)) return '⛔ 只有群主或管理员才能执行此操作！'
@@ -525,6 +535,7 @@ export default definePlugin<WifePickerConfig>({
 
     // 11. 帮助
     '抽老婆帮助': {
+      bare: true,
       aliases: ['clpbz', 'wifehelp', '老婆插件帮助'],
       description: '查看抽老婆插件全部指令指南',
       handler() {
@@ -568,7 +579,7 @@ export default definePlugin<WifePickerConfig>({
 
       return {
         text: `🌸 挑选成功！【${wifeName}】已正式成为你今天的伴侣~`,
-        image: { url: getAvatarUrl(ctx.botId, selectedWifeId) },
+        image: { url: qqAvatar(ctx.botId, selectedWifeId) },
       }
     },
 

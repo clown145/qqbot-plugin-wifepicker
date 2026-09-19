@@ -1,4 +1,4 @@
-import type { Session } from '@qqbot/sdk'
+import { qqAvatar, type Session } from '@qqbot/sdk'
 import type { WifePickerConfig } from './types.js'
 
 /** 获取北京时间（UTC+8）的当前日期字符串，格式 YYYY-MM-DD */
@@ -8,9 +8,9 @@ export function getBeijingDateString(timestamp: number = Date.now()): string {
   return beijingTime.toISOString().slice(0, 10)
 }
 
-/** 获取 QQ 官方机器人体系下的用户 640px 头像 CDN 地址 */
+/** 获取 QQ 官方机器人体系下的用户 640px 头像 CDN 地址（对齐 @qqbot/sdk qqAvatar 规范） */
 export function getAvatarUrl(botId: string, openid: string): string {
-  return `https://thirdqq.qlogo.cn/qqapp/${encodeURIComponent(botId)}/${encodeURIComponent(openid)}/640`
+  return qqAvatar(botId, openid, 640)
 }
 
 /** 格式化毫秒数为人类可读的倒计时文本（如 2天5小时30分 / 15分20秒） */
@@ -69,8 +69,9 @@ export function extractTargetUser(session: Session): { userId: string; username:
   return null
 }
 
-/** 检查发言者是否为管理员或群主 */
+/** 检查发言者是否为管理员或群主（优先使用 session.memberRole） */
 export function isGroupAdmin(session: Session): boolean {
+  if (session.memberRole === 'admin' || session.memberRole === 'owner') return true
   const raw = session.raw as Record<string, unknown> | undefined
   const author = raw?.author as Record<string, unknown> | undefined
   const role = String(author?.member_role ?? '').toLowerCase()

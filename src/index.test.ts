@@ -382,5 +382,38 @@ describe('qqbot-plugin-wifepicker', () => {
     expect(res5).toBe(true)
     expect(writeCount).toBe(4)
   })
+
+  it('插件声明了正确的 bare 与 permission 规范，且 isGroupAdmin 识别 session.memberRole', async () => {
+    const { isGroupAdmin } = await import('./utils.js')
+
+    // 1. 权限与裸命令声明验证
+    const commands = plugin.commands as Record<string, { bare?: boolean; permission?: string }>
+    expect(commands['今日老婆']?.bare).toBe(true)
+    expect(commands['我的老婆']?.bare).toBe(true)
+    expect(commands['强娶']?.bare).toBe(true)
+    expect(commands['挑选老婆']?.bare).toBe(true)
+    expect(commands['求婚']?.bare).toBe(true)
+    expect(commands['分手']?.bare).toBe(true)
+    expect(commands['rbq排行']?.bare).toBe(true)
+    expect(commands['抽老婆帮助']?.bare).toBe(true)
+
+    expect(commands['重置记录']?.permission).toBe('group_admin')
+    expect(commands['重置强娶时间']?.permission).toBe('group_admin')
+    expect(commands['重置求婚时间']?.permission).toBe('group_admin')
+
+    // 2. isGroupAdmin 兼容 session.memberRole
+    const adminSession = createMockSession({ scene: 'group', targetId: 'g1', userId: 'u1' }) as any
+    adminSession.memberRole = 'admin'
+    expect(isGroupAdmin(adminSession)).toBe(true)
+
+    const ownerSession = createMockSession({ scene: 'group', targetId: 'g1', userId: 'u1' }) as any
+    ownerSession.memberRole = 'owner'
+    expect(isGroupAdmin(ownerSession)).toBe(true)
+
+    const memberSession = createMockSession({ scene: 'group', targetId: 'g1', userId: 'u1' }) as any
+    memberSession.memberRole = 'member'
+    expect(isGroupAdmin(memberSession)).toBe(false)
+  })
 })
+
 
