@@ -1,5 +1,13 @@
 import type { ScopedDB } from '@qqbot/sdk'
-import type { ActiveUserRow, CooldownRow, CooldownType, RbqRankingRow, RecordType, WifeRecordRow } from './types.js'
+import type {
+  ActiveUserRow,
+  CooldownRow,
+  CooldownType,
+  PendingKind,
+  RbqRankingRow,
+  RecordType,
+  WifeRecordRow,
+} from './types.js'
 
 /** 初始化插件所需的 D1 数据表 */
 export async function initSchema(db: ScopedDB): Promise<void> {
@@ -29,6 +37,15 @@ export async function initSchema(db: ScopedDB): Promise<void> {
       cd_type TEXT NOT NULL,
       expire_at INTEGER NOT NULL,
       PRIMARY KEY (group_id, user_id, cd_type)
+    );
+
+    CREATE TABLE IF NOT EXISTS {pending} (
+      kind TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      data TEXT NOT NULL,
+      expire_at INTEGER NOT NULL,
+      PRIMARY KEY (kind, group_id, user_id)
     );
 
     CREATE INDEX IF NOT EXISTS {idx_records_group_user_date} ON {records}(group_id, user_id, date);
@@ -72,6 +89,43 @@ export async function lazyCleanup(db: ScopedDB, activeDays: number): Promise<voi
   await db.run('DELETE FROM {cooldowns} WHERE expire_at < ?', now)
   // 4. 清理超过 active_user_days 未发言的不活跃成员
   await db.run('DELETE FROM {active_users} WHERE last_seen < ?', activeLimit)
+  // 5. 清理没人点、已过期的挑选/求婚待定状态
+  await db.run('DELETE FROM {pending} WHERE expire_at < ?', now)
+}
+
+/**
+ * 存一份按钮交互的待定状态（挑选老婆的候选名单、等对方回应的求婚），同一人同一种只留最新一份。
+ * 放 D1 不放 KV：KV 写、删各只有 1,000 次/天且全机器人共享，一轮交互就要写删各一次
+ */
+export async function savePending(
+  db: ScopedDB,
+  kind: PendingKind,
+  groupId: string,
+  userId: string,
+  data: unknown,
+  ttlMs: number,
+): Promise<void> {
+  await db.run(
+    `INSERT OR REPLACE INTO {pending} (kind, group_id, user_id, data, expire_at)
+     VALUES (?, ?, ?, ?, ?);`,
+    kind,
+    groupId,
+    userId,
+    JSON.stringify(data),
+    Date.now() + ttlMs,
+  )
+}
+
+/** 取出并删掉待定状态：一条 DELETE … RETURNING，按钮连点两下也只有一次拿得到；过期或已被取走返回 null */
+export async function takePending<T>(db: ScopedDB, kind: PendingKind, groupId: string, userId: string): Promise<T | null> {
+  const row = await db.first<{ data: string }>(
+    'DELETE FROM {pending} WHERE kind = ? AND group_id = ? AND user_id = ? AND expire_at > ? RETURNING data;',
+    kind,
+    groupId,
+    userId,
+    Date.now(),
+  )
+  return row ? (JSON.parse(row.data) as T) : null
 }
 
 /**

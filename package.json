@@ -1,6 +1,6 @@
 {
   "name": "qqbot-plugin-wifepicker",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "QQ 机器人今日老婆与群友互动插件",
   "type": "module",
   "files": [

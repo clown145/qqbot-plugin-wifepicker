@@ -1,10 +1,9 @@
 {
   "name": "wifepicker",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "apiVersion": 1,
   "permissions": [
-    "db",
-    "kv"
+    "db"
   ],
   "depends": {},
   "conflicts": [],
@@ -201,22 +200,6 @@
         },
         "default": []
       },
-      "whitelist_groups": {
-        "type": "array",
-        "title": "白名单群列表（为空则不限制）",
-        "items": {
-          "type": "string"
-        },
-        "default": []
-      },
-      "blacklist_groups": {
-        "type": "array",
-        "title": "黑名单群列表",
-        "items": {
-          "type": "string"
-        },
-        "default": []
-      },
       "active_user_throttle_minutes": {
         "type": "integer",
         "title": "活跃成员刷库防抖间隔（分钟）",
@@ -250,8 +233,6 @@
     "excluded_users": [],
     "force_marry_excluded_users": [],
     "active_user_throttle_minutes": 60,
-    "only_record_at_message": false,
-    "whitelist_groups": [],
-    "blacklist_groups": []
+    "only_record_at_message": false
   }
 }

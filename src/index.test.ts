@@ -9,12 +9,20 @@ function createMemoryDB(): ScopedDB {
   const activeUsers = new Map<string, ActiveUserRow>()
   const records: WifeRecordRow[] = []
   const cooldowns = new Map<string, CooldownRow>()
+  const pending = new Map<string, { data: string; expire_at: number }>()
   let recordAutoId = 1
 
   return {
     table: (n) => `p_wifepicker_${n}`,
     exec: async () => {},
     run: async (sql, ...params) => {
+      // 0. 挑选/求婚的待定状态
+      if (sql.includes('INSERT OR REPLACE INTO {pending}')) {
+        const [kind, groupId, userId, data, expireAt] = params as [string, string, string, string, number]
+        pending.set(`${kind}:${groupId}:${userId}`, { data, expire_at: expireAt })
+        return { changes: 1 }
+      }
+
       // 1. active_users 插入/更新
       if (sql.includes('{active_users}') && sql.includes('INSERT')) {
         const [groupId, userId, username, lastSeen] = params as [string, string, string, number]
@@ -162,6 +170,16 @@ function createMemoryDB(): ScopedDB {
     },
 
     first: async <T>(sql: string, ...params: unknown[]) => {
+      // 取出并删掉待定状态（DELETE … RETURNING data）
+      if (sql.includes('DELETE FROM {pending}')) {
+        const [kind, groupId, userId, now] = params as [string, string, string, number]
+        const key = `${kind}:${groupId}:${userId}`
+        const row = pending.get(key)
+        if (!row || row.expire_at <= now) return null
+        pending.delete(key)
+        return { data: row.data } as T
+      }
+
       // 查 cooldown
       if (sql.includes('FROM {cooldowns}')) {
         const [groupId, userId, cdType, now] = params as [string, string, string, number]
@@ -272,6 +290,59 @@ describe('qqbot-plugin-wifepicker', () => {
       ctx: { db, botId: 'bot-123' },
     })
     expect(sessionBlocked.replies[0]).toContain('强娶还在冷却中')
+  })
+
+  it('挑选老婆：候选名单存 D1，按钮选定后写记录，再点一次提示已失效', async () => {
+    const db = createMemoryDB()
+    for (const [id, name] of [['user-2', '小红'], ['user-3', '小蓝']]) {
+      await db.run('INSERT INTO {active_users} (group_id, user_id, username, last_seen) VALUES (?, ?, ?, ?);', 'group-1', id, name, Date.now())
+    }
+    const who = { scene: 'group' as const, targetId: 'group-1', userId: 'user-1', userName: '小明' }
+
+    const picking = await runCommand(plugin, '挑选老婆', '', { session: who, ctx: { db } })
+    expect((picking.replies[0] as { markdown: { content: string } }).markdown.content).toContain('【小红】')
+
+    const chosen = await runButton(plugin, 'pick_select', 'pick:user-2', { session: who, ctx: { db } })
+    expect((chosen.session.replies[0] as { text: string }).text).toContain('挑选成功！【小红】')
+
+    const again = await runButton(plugin, 'pick_select', 'pick:user-3', { session: who, ctx: { db } })
+    expect((again.session.replies[0] as { text: string }).text).toContain('已超时失效')
+
+    const history = await runCommand(plugin, '我的老婆', '', { session: who, ctx: { db } })
+    expect((history.replies[0] as { text: string }).text).toContain('【小红】（挑中）')
+  })
+
+  it('求婚：只有被求婚者的回应算数，同意后双方结缘', async () => {
+    const db = createMemoryDB()
+    await runCommand(plugin, '求婚', '', {
+      session: {
+        scene: 'group',
+        targetId: 'group-1',
+        userId: 'user-1',
+        userName: '小明',
+        raw: { mentions: [{ id: 'user-2', username: '小红' }] },
+      },
+      ctx: { db },
+    })
+
+    // 状态按被求婚者存：求婚者自己点不到
+    const self = await runButton(plugin, 'propose_btn', 'agree:user-1', {
+      session: { scene: 'group', targetId: 'group-1', userId: 'user-1' },
+      ctx: { db },
+    })
+    expect((self.session.replies[0] as { text: string }).text).toContain('已超时')
+
+    const agreed = await runButton(plugin, 'propose_btn', 'agree:user-1', {
+      session: { scene: 'group', targetId: 'group-1', userId: 'user-2' },
+      ctx: { db },
+    })
+    expect((agreed.session.replies[0] as { markdown: { content: string } }).markdown.content).toContain('欣然接受')
+
+    const history = await runCommand(plugin, '我的老婆', '', {
+      session: { scene: 'group', targetId: 'group-1', userId: 'user-1' },
+      ctx: { db },
+    })
+    expect((history.replies[0] as { text: string }).text).toContain('【小红】（求婚结缘）')
   })
 
   it('分手流程与冷静期', async () => {

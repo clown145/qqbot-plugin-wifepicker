@@ -1,7 +1,6 @@
 import { button, definePlugin, keyboard, qqAvatar } from '@qqbot/sdk'
-import type { WifePickerConfig } from './types.js'
+import type { PickPendingState, ProposePendingState, WifePickerConfig } from './types.js'
 import {
-  clearActiveUserCache,
   drawCandidates,
   getCooldown,
   getRbqRanking,
@@ -12,23 +11,23 @@ import {
   removeRecordById,
   resetGroupCooldown,
   resetGroupTodayRecords,
+  savePending,
   setCooldown,
+  takePending,
   upsertForceRecord,
   addRecord,
 } from './db.js'
-import {
-  formatRemainingTime,
-  getBeijingDateString,
-  isGroupAdmin,
-  isGroupAllowed,
-  extractTargetUser,
-} from './utils.js'
+import { formatRemainingTime, getBeijingDateString, isGroupAdmin, extractTargetUser } from './utils.js'
 
+/** 挑选老婆、求婚的按钮等多久：超时再点只会提示失效 */
+const PENDING_TTL_MS = 60 * 1000
+
+// 只在部分群启用：用面板插件详情页的「生效的群」，框架分发时就挡掉，插件里不再自己判断
 export default definePlugin<WifePickerConfig>({
   name: 'wifepicker',
   displayName: '今日老婆',
   description: '抽取活跃群友当老婆，支持强娶、挑选、求婚与被强娶排行，D1 存储与自动惰性清理',
-  permissions: ['db', 'kv'],
+  permissions: ['db'],
 
   configSchema: {
     type: 'object',
@@ -50,18 +49,6 @@ export default definePlugin<WifePickerConfig>({
       force_marry_excluded_users: {
         type: 'array',
         title: '强娶排除用户 OpenID 列表',
-        items: { type: 'string' },
-        default: [],
-      },
-      whitelist_groups: {
-        type: 'array',
-        title: '白名单群列表（为空则不限制）',
-        items: { type: 'string' },
-        default: [],
-      },
-      blacklist_groups: {
-        type: 'array',
-        title: '黑名单群列表',
         items: { type: 'string' },
         default: [],
       },
@@ -96,8 +83,6 @@ export default definePlugin<WifePickerConfig>({
     force_marry_excluded_users: [],
     active_user_throttle_minutes: 60,
     only_record_at_message: false,
-    whitelist_groups: [],
-    blacklist_groups: [],
   },
 
   hooks: {
@@ -113,7 +98,6 @@ export default definePlugin<WifePickerConfig>({
     // 监听群消息与 @消息，持续静默维护活跃群友池（防抖写入 D1）
     'qq.group.at_message': async ({ session, ctx }) => {
       if (session.scene === 'group' && session.targetId && session.userId) {
-        if (!isGroupAllowed(session.targetId, ctx.config)) return
         const throttleMs = (ctx.config.active_user_throttle_minutes || 60) * 60 * 1000
         ctx.waitUntil(recordActiveUser(ctx.db, session.targetId, session.userId, session.userName || '群友', throttleMs))
       }
@@ -121,7 +105,6 @@ export default definePlugin<WifePickerConfig>({
     'qq.group.message': async ({ session, ctx }) => {
       if (ctx.config.only_record_at_message) return
       if (session.scene === 'group' && session.targetId && session.userId) {
-        if (!isGroupAllowed(session.targetId, ctx.config)) return
         const throttleMs = (ctx.config.active_user_throttle_minutes || 60) * 60 * 1000
         ctx.waitUntil(recordActiveUser(ctx.db, session.targetId, session.userId, session.userName || '群友', throttleMs))
       }
@@ -136,7 +119,6 @@ export default definePlugin<WifePickerConfig>({
       description: '随机抽取一名近期的活跃群友作为今日老婆',
       async handler({ session, ctx }) {
         if (session.scene !== 'group') return '⚠️ 今日老婆功能仅限群聊中使用哦~'
-        if (!isGroupAllowed(session.targetId, ctx.config)) return
 
         const groupId = session.targetId
         const userId = session.userId
@@ -206,7 +188,6 @@ export default definePlugin<WifePickerConfig>({
       description: '查看今日已抽取的老婆记录',
       async handler({ session, ctx }) {
         if (session.scene !== 'group') return '⚠️ 仅限群聊中使用哦~'
-        if (!isGroupAllowed(session.targetId, ctx.config)) return
 
         const today = getBeijingDateString(session.timestamp)
         const records = await getTodayRecords(ctx.db, session.targetId, session.userId, today)
@@ -240,7 +221,6 @@ export default definePlugin<WifePickerConfig>({
       description: '消耗强娶冷却，强行将群友纳为今日老婆：/强娶 @群友',
       async handler({ session, ctx }) {
         if (session.scene !== 'group') return '⚠️ 仅限群聊中使用哦~'
-        if (!isGroupAllowed(session.targetId, ctx.config)) return
 
         const groupId = session.targetId
         const userId = session.userId
@@ -314,7 +294,6 @@ export default definePlugin<WifePickerConfig>({
       description: '从随机抽取的 3 位候选人中选择一位成为今日老婆',
       async handler({ session, ctx }) {
         if (session.scene !== 'group') return '⚠️ 仅限群聊中使用哦~'
-        if (!isGroupAllowed(session.targetId, ctx.config)) return
 
         const groupId = session.targetId
         const userId = session.userId
@@ -333,18 +312,14 @@ export default definePlugin<WifePickerConfig>({
           return `😿 本群近期活跃人数太少（仅找到 ${candidates.length} 位），无法凑成挑选池，建议直接使用 /今日老婆 抽取！`
         }
 
-        // 将候选列表存入 KV，有效期 60 秒
-        const stateKey = `pick:${groupId}:${userId}`
-        await ctx.kv.put(
-          stateKey,
-          JSON.stringify({
-            groupId,
-            userId,
-            candidates: candidates.map((c) => ({ id: c.user_id, name: c.username })),
-            createdAt: Date.now(),
-          }),
-          { ttl: 60 },
-        )
+        // 候选名单存 D1，按钮点了才取出来核对
+        const state: PickPendingState = {
+          groupId,
+          userId,
+          candidates: candidates.map((c) => ({ id: c.user_id, name: c.username })),
+          createdAt: Date.now(),
+        }
+        await savePending(ctx.db, 'pick', groupId, userId, state, PENDING_TTL_MS)
 
         // 构建 Inline Keyboard 按钮
         const candidateButtons = candidates.map((c, index) => [
@@ -379,7 +354,6 @@ export default definePlugin<WifePickerConfig>({
       description: '向指定的群友发起浪漫求婚：/求婚 @群友',
       async handler({ session, ctx }) {
         if (session.scene !== 'group') return '⚠️ 仅限群聊中使用哦~'
-        if (!isGroupAllowed(session.targetId, ctx.config)) return
 
         const groupId = session.targetId
         const userId = session.userId
@@ -397,20 +371,16 @@ export default definePlugin<WifePickerConfig>({
         const targetCd = await getCooldown(ctx.db, groupId, target.userId, 'propose')
         if (targetCd) return `⏳ 对方正处于求婚冷却中，剩余时间：${formatRemainingTime(targetCd.expire_at - now)}`
 
-        // 存入 pending 求婚状态，60 秒有效
-        const proposeKey = `propose:${groupId}:${target.userId}`
-        await ctx.kv.put(
-          proposeKey,
-          JSON.stringify({
-            groupId,
-            fromId: userId,
-            fromName: session.userName || '群友',
-            toId: target.userId,
-            toName: target.username,
-            createdAt: now,
-          }),
-          { ttl: 60 },
-        )
+        // 按被求婚者存：之后点按钮的是对方
+        const state: ProposePendingState = {
+          groupId,
+          fromId: userId,
+          fromName: session.userName || '群友',
+          toId: target.userId,
+          toName: target.username,
+          createdAt: now,
+        }
+        await savePending(ctx.db, 'propose', groupId, target.userId, state, PENDING_TTL_MS)
 
         const kb = keyboard([
           [
@@ -441,7 +411,6 @@ export default definePlugin<WifePickerConfig>({
       description: '解除非强娶建立的老婆关系，进入 72 小时冷静期',
       async handler({ session, ctx }) {
         if (session.scene !== 'group') return '⚠️ 仅限群聊中使用哦~'
-        if (!isGroupAllowed(session.targetId, ctx.config)) return
 
         const groupId = session.targetId
         const userId = session.userId
@@ -475,7 +444,6 @@ export default definePlugin<WifePickerConfig>({
       description: '查看本群最近 30 天被强娶次数最多的 Top 10 群友',
       async handler({ session, ctx }) {
         if (session.scene !== 'group') return '⚠️ 仅限群聊中使用哦~'
-        if (!isGroupAllowed(session.targetId, ctx.config)) return
 
         const list = await getRbqRanking(ctx.db, session.targetId, 30, 10)
         if (list.length === 0) {
@@ -562,20 +530,17 @@ export default definePlugin<WifePickerConfig>({
     // 挑选老婆：选定
     pick_select: async ({ session, ctx, buttonData }) => {
       const selectedWifeId = buttonData.replace(/^pick:/, '')
-      const stateKey = `pick:${session.targetId}:${session.userId}`
-      const raw = await ctx.kv.get(stateKey)
+      const state = await takePending<PickPendingState>(ctx.db, 'pick', session.targetId, session.userId)
 
-      if (!raw) {
+      if (!state) {
         return { text: '⚠️ 该挑选会话已超时失效，请重新发送 /挑选老婆 试试吧~' }
       }
 
-      const state = JSON.parse(raw) as { candidates: Array<{ id: string; name: string }> }
       const matched = state.candidates.find((c) => c.id === selectedWifeId)
       const wifeName = matched?.name || `群友(${selectedWifeId.slice(-4)})`
       const today = getBeijingDateString(session.timestamp)
 
       await addRecord(ctx.db, session.targetId, session.userId, selectedWifeId, wifeName, 'pick', today)
-      await ctx.kv.delete(stateKey)
 
       return {
         text: `🌸 挑选成功！【${wifeName}】已正式成为你今天的伴侣~`,
@@ -585,8 +550,7 @@ export default definePlugin<WifePickerConfig>({
 
     // 挑选老婆：取消
     pick_cancel: async ({ session, ctx }) => {
-      const stateKey = `pick:${session.targetId}:${session.userId}`
-      await ctx.kv.delete(stateKey)
+      await takePending(ctx.db, 'pick', session.targetId, session.userId)
       return '💨 你已放弃本次挑选，好男人志在四方！'
     },
 
@@ -594,15 +558,11 @@ export default definePlugin<WifePickerConfig>({
     propose_btn: async ({ session, ctx, buttonData }) => {
       const isAgree = buttonData.startsWith('agree:')
       const fromUserId = buttonData.replace(/^(agree|reject):/, '')
-      const stateKey = `propose:${session.targetId}:${session.userId}`
-      const raw = await ctx.kv.get(stateKey)
+      const state = await takePending<ProposePendingState>(ctx.db, 'propose', session.targetId, session.userId)
 
-      if (!raw) {
+      if (!state) {
         return { text: '⚠️ 求婚邀请已超时，这份心意随风而逝了...' }
       }
-
-      const state = JSON.parse(raw) as { fromId: string; fromName: string; toName: string }
-      await ctx.kv.delete(stateKey)
 
       if (isAgree) {
         const today = getBeijingDateString(session.timestamp)

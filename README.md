@@ -1,6 +1,6 @@
 # 🌸 今日老婆插件 (qqbot-plugin-wifepicker)
 
-适用于 [qqbot-workers](https://github.com/clown145/qqbot-workers) 的群聊互动插件。从群内近期活跃成员中随机抽取“今日老婆”，并提供强娶、挑选、求婚及被强娶风云榜等互动功能。
+适用于 [QFlareBot](https://github.com/qflarebot/QFlareBot) 的群聊互动插件。从群内近期活跃成员中随机抽取“今日老婆”，并提供强娶、挑选、求婚及被强娶风云榜等互动功能。
 
 本项目基于 [astrbot-plugin-wifepicker](https://github.com/Heximiao/astrbot-plugin-wifepicker) 进行深度重构与架构移植，针对 Cloudflare Workers Serverless 边缘环境进行了彻底优化。
 
@@ -8,7 +8,7 @@
 
 ## ✨ 核心亮点
 
-- ⚡ **边缘 D1 数据库存储**：彻底抛弃本地 JSON 文件，使用 Cloudflare D1 边缘 SQLite 存储活跃成员、抽取记录与冷却状态，具备天然的原子性与高并发安全性。
+- ⚡ **边缘 D1 数据库存储**：彻底抛弃本地 JSON 文件，使用 Cloudflare D1 边缘 SQLite 存储活跃成员、抽取记录、冷却状态以及挑选/求婚按钮的待定状态，具备天然的原子性与高并发安全性；不占用额度紧张的 KV。
 - 🧹 **惰性数据清理**：无须额外的数据库触发器或常驻后台任务，在指令触发时顺带清理 24 小时前普通记录、30 天前过期历史以及到期 CD。
 - 🤖 **QQ 官方机器人深度适配**：
   - 完美适配 `member_openid` 匿名体系；
@@ -50,7 +50,8 @@
 - `auto_set_other_half`：双向绑定老婆（对方当天无记录时生效，默认关闭）
 - `excluded_users`：抽老婆排除用户列表
 - `force_marry_excluded_users`：强娶保护名单
-- `whitelist_groups` / `blacklist_groups`：群白名单与黑名单
+
+只想在部分群启用：在面板的插件详情页设置「生效的群」（所有群 / 只在这些群 / 除了这些群），由框架在分发时过滤。0.2.0 起去掉了插件自带的 `whitelist_groups` / `blacklist_groups`，升级后请在面板重新设置；需要 QFlareBot 已带「生效的群」的版本（2026-09-26 起）。
 
 ---
 

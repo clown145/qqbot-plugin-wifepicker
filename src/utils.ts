@@ -1,5 +1,4 @@
 import { qqAvatar, type Session } from '@qqbot/sdk'
-import type { WifePickerConfig } from './types.js'
 
 /** 获取北京时间（UTC+8）的当前日期字符串，格式 YYYY-MM-DD */
 export function getBeijingDateString(timestamp: number = Date.now()): string {
@@ -25,19 +24,6 @@ export function formatRemainingTime(remainingMs: number): string {
   if (hours > 0) return `${hours}小时${mins}分`
   if (mins > 0) return `${mins}分${secs}秒`
   return `${secs}秒`
-}
-
-/** 检查当前群是否在允许名单内 */
-export function isGroupAllowed(groupId: string, config: WifePickerConfig): boolean {
-  if (!groupId) return false
-  const gid = String(groupId)
-  if (config.blacklist_groups && config.blacklist_groups.includes(gid)) {
-    return false
-  }
-  if (config.whitelist_groups && config.whitelist_groups.length > 0) {
-    return config.whitelist_groups.includes(gid)
-  }
-  return true
 }
 
 /** 从 session 中提取提及（@）的目标用户 */

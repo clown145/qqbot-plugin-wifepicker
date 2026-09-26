@@ -23,10 +23,6 @@ export interface WifePickerConfig {
   active_user_throttle_minutes: number
   /** 是否仅记录 @机器人的消息（为 true 时忽略普通群聊水群消息，极大节省写入额度），默认 false */
   only_record_at_message: boolean
-  /** 白名单群（为空则全部允许） */
-  whitelist_groups: string[]
-  /** 黑名单群 */
-  blacklist_groups: string[]
 }
 
 export interface ActiveUserRow {
@@ -63,6 +59,9 @@ export interface RbqRankingRow {
   wife_name: string
   count: number
 }
+
+/** 待定状态的种类：pick 按挑选者存，propose 按被求婚者存（都是之后点按钮的那个人） */
+export type PendingKind = 'pick' | 'propose'
 
 export interface ProposePendingState {
   groupId: string
