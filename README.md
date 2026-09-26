@@ -1,4 +1,4 @@
-# 🌸 今日老婆插件 (qqbot-plugin-wifepicker)
+# 🌸 今日老婆插件 (qflarebot-plugin-wifepicker)
 
 适用于 [QFlareBot](https://github.com/qflarebot/QFlareBot) 的群聊互动插件。从群内近期活跃成员中随机抽取“今日老婆”，并提供强娶、挑选、求婚及被强娶风云榜等互动功能。
 

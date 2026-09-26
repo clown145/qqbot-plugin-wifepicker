@@ -194,7 +194,7 @@ function createMemoryDB(): ScopedDB {
   }
 }
 
-describe('qqbot-plugin-wifepicker', () => {
+describe('qflarebot-plugin-wifepicker', () => {
   it('帮助指令 /抽老婆帮助 返回指令列表', async () => {
     const session = await runCommand(plugin, '抽老婆帮助')
     expect(session.replies).toHaveLength(1)

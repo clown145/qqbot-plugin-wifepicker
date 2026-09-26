@@ -1,5 +1,5 @@
 {
-  "name": "qqbot-plugin-wifepicker",
+  "name": "qflarebot-plugin-wifepicker",
   "version": "0.2.0",
   "description": "QQ 机器人今日老婆与群友互动插件",
   "type": "module",
@@ -7,7 +7,7 @@
     "dist"
   ],
   "keywords": [
-    "qqbot-plugin"
+    "qflarebot-plugin"
   ],
   "scripts": {
     "build": "qqbot-plugin build",
