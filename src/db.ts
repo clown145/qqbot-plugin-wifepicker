@@ -9,16 +9,18 @@ import type {
   WifeRecordRow,
 } from './types.js'
 
-/** 初始化插件所需的 D1 数据表 */
+/**
+ * 初始化插件所需的 D1 数据表。
+ *
+ * 活跃群友存在 {members}：每个群一行，data 是 `{ openid: [昵称, 最后活跃的北京日序号] }`。
+ * 旧版一人一行的 {active_users} 不再建也不再写，升级前留下的数据在第一次读到某个群时并进新表（见 loadGroup）。
+ */
 export async function initSchema(db: ScopedDB): Promise<void> {
   await db.exec(`
-    CREATE TABLE IF NOT EXISTS {active_users} (
-      group_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      username TEXT NOT NULL,
-      last_seen INTEGER NOT NULL,
-      PRIMARY KEY (group_id, user_id)
-    );
+    CREATE TABLE IF NOT EXISTS {members} (
+      group_id TEXT PRIMARY KEY,
+      data TEXT NOT NULL
+    ) WITHOUT ROWID;
 
     CREATE TABLE IF NOT EXISTS {records} (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,17 +52,128 @@ export async function initSchema(db: ScopedDB): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS {idx_records_group_user_date} ON {records}(group_id, user_id, date);
     CREATE INDEX IF NOT EXISTS {idx_records_created} ON {records}(created_at);
-    CREATE INDEX IF NOT EXISTS {idx_active_seen} ON {active_users}(group_id, last_seen);
   `)
 }
 
-// 内存防抖缓存：groupId:userId -> { lastSeen: number, username: string }
-const activeCache = new Map<string, { lastSeen: number; username: string }>()
-const MAX_CACHE_SIZE = 5000
+// ─── 活跃群友 ───────────────────────────────────────────────────────────────
+//
+// D1 按改动的行数计费（删除、索引也算），每天 10 万行，全机器人共享。这个插件每条群消息都会看一眼，
+// 所以写入次数不能跟着消息数涨：
+// - 只记到「天」：同一个人一天最多记一次，说 1 句和说 500 句一样；
+// - 先读后写：读的额度是写的 50 倍，记过的人一律不写；
+// - 一个群一行：当天新冒出来的人攒在内存里，同一个群最多每 FLUSH_MS 写一次，
+//   一条 json_patch 把攒下的人和要剔掉的过期群友一起并进去，只算 1 行。
+// isolate 被回收时没写进去的人会丢，他们下次说话就补上，活跃名单本来就是个大概。
 
-/** 清空活跃成员内存防抖缓存（主要供单测调用） */
+/** 同一个群最多多久写一次 */
+const FLUSH_MS = 5 * 60 * 1000
+/** 内存里的群名单多久以后重新读一次（别的 isolate 写进去的人要能看到） */
+const CACHE_MS = 10 * 60 * 1000
+const MAX_CACHED_GROUPS = 500
+
+/** openid → [昵称, 最后活跃的北京日序号] */
+type MemberMap = Map<string, [string, number]>
+
+interface GroupState {
+  members: MemberMap
+  loadedAt: number
+  /** 还没写进 D1 的新增 / 改名 / 当天首次活跃 */
+  pending: MemberMap
+  lastFlush: number
+  flushing?: Promise<boolean> | undefined
+}
+
+const groups = new Map<string, GroupState>()
+
+/** 清空活跃群友的内存缓存（主要供单测调用） */
 export function clearActiveUserCache(): void {
-  activeCache.clear()
+  groups.clear()
+}
+
+/** 北京时间的日序号：1970-01-01 起第几天 */
+export function beijingDay(ms: number = Date.now()): number {
+  return Math.floor((ms + 8 * 3600 * 1000) / 86400000)
+}
+
+function parseMembers(data: string | undefined): MemberMap {
+  const map: MemberMap = new Map()
+  if (!data) return map
+  try {
+    for (const [id, v] of Object.entries(JSON.parse(data) as Record<string, unknown>)) {
+      if (Array.isArray(v) && typeof v[0] === 'string' && typeof v[1] === 'number') map.set(id, [v[0], v[1]])
+    }
+  } catch {
+    // 坏数据当成空名单，下次写入会重新攒起来
+  }
+  return map
+}
+
+/**
+ * 读一个群的名单（1 行）。新表里还没有这个群时，从升级前的 {active_users} 捞一次，
+ * 捞到的人放进 pending，下次写入就并进新表；旧表不存在（新装的）就当没有
+ */
+async function readGroup(db: ScopedDB, groupId: string): Promise<{ members: MemberMap; legacy: MemberMap }> {
+  const row = await db.first<{ data: string }>('SELECT data FROM {members} WHERE group_id = ?;', groupId)
+  if (row) return { members: parseMembers(row.data), legacy: new Map() }
+  const legacy: MemberMap = new Map()
+  try {
+    const rows = await db.all<ActiveUserRow>('SELECT user_id, username, last_seen FROM {active_users} WHERE group_id = ?;', groupId)
+    for (const r of rows) legacy.set(r.user_id, [r.username, beijingDay(r.last_seen)])
+  } catch (err) {
+    if (!String(err).includes('no such table')) throw err
+  }
+  return { members: new Map(legacy), legacy }
+}
+
+async function loadGroup(db: ScopedDB, groupId: string, now: number): Promise<GroupState> {
+  let state = groups.get(groupId)
+  if (state && now - state.loadedAt < CACHE_MS) return state
+  const { members, legacy } = await readGroup(db, groupId)
+  if (state) {
+    // 重新读到的名单盖掉旧缓存，还没写进去的照样留着
+    for (const [id, v] of state.pending) members.set(id, v)
+    state.members = members
+    state.loadedAt = now
+  } else {
+    if (groups.size >= MAX_CACHED_GROUPS) {
+      const oldest = groups.keys().next().value
+      if (oldest !== undefined) groups.delete(oldest)
+    }
+    state = { members, loadedAt: now, pending: legacy, lastFlush: 0 }
+    groups.set(groupId, state)
+  }
+  return state
+}
+
+/**
+ * 把攒下的人写进 D1：先重读一次这一行（别的 isolate 可能刚写过），据此算出要剔掉的过期群友，
+ * 和新增的人一起放进一条 json_patch——值为 null 的键会被删掉。整条语句只改这一行。
+ */
+async function flushGroup(db: ScopedDB, groupId: string, state: GroupState, activeDays: number, now: number): Promise<boolean> {
+  const batch = new Map(state.pending)
+  if (!batch.size) return false
+  state.lastFlush = now
+  const { members: fresh } = await readGroup(db, groupId)
+  const oldest = beijingDay(now) - activeDays
+  const patch: Record<string, [string, number] | null> = {}
+  for (const [id, [, day]] of fresh) if (day < oldest && !batch.has(id)) patch[id] = null
+  // 攒下的也可能早就过期了（从旧表迁过来的）
+  for (const [id, v] of batch) patch[id] = v[1] < oldest ? null : v
+  await db.run(
+    `INSERT INTO {members} (group_id, data) VALUES (?1, json_patch('{}', ?2))
+     ON CONFLICT(group_id) DO UPDATE SET data = json_patch({members}.data, ?2);`,
+    groupId,
+    JSON.stringify(patch),
+  )
+  // 写的时候又来了新的就留着下次写
+  for (const [id, v] of batch) if (state.pending.get(id) === v) state.pending.delete(id)
+  for (const [id, v] of fresh) if (!state.pending.has(id)) state.members.set(id, v)
+  for (const [id, v] of Object.entries(patch)) {
+    if (v === null) state.members.delete(id)
+    else state.members.set(id, v)
+  }
+  state.loadedAt = now
+  return true
 }
 
 let lastCleanupTime = 0
@@ -72,13 +185,12 @@ export function resetCleanupThrottle(): void {
 }
 
 /** 惰性清理过期数据（在指令触发时顺带执行，避免全表膨胀；内置 10 分钟防抖，避免高频并发重复清理） */
-export async function lazyCleanup(db: ScopedDB, activeDays: number): Promise<void> {
+export async function lazyCleanup(db: ScopedDB): Promise<void> {
   const now = Date.now()
   if (now - lastCleanupTime < CLEANUP_THROTTLE_MS) return
   lastCleanupTime = now
 
   const oneDayAgo = now - 86400 * 1000
-  const activeLimit = now - activeDays * 86400 * 1000
   const thirtyDaysAgo = now - 30 * 86400 * 1000
 
   // 1. 清理非强娶且超过 24 小时的普通抽取记录
@@ -87,10 +199,9 @@ export async function lazyCleanup(db: ScopedDB, activeDays: number): Promise<voi
   await db.run('DELETE FROM {records} WHERE record_type = "force" AND created_at < ?', thirtyDaysAgo)
   // 3. 清理已到期的 CD 记录
   await db.run('DELETE FROM {cooldowns} WHERE expire_at < ?', now)
-  // 4. 清理超过 active_user_days 未发言的不活跃成员
-  await db.run('DELETE FROM {active_users} WHERE last_seen < ?', activeLimit)
-  // 5. 清理没人点、已过期的挑选/求婚待定状态
+  // 4. 清理没人点、已过期的挑选/求婚待定状态
   await db.run('DELETE FROM {pending} WHERE expire_at < ?', now)
+  // 不活跃的群友在写入名单时顺手剔掉（见 flushGroup），不用单独删
 }
 
 /**
@@ -129,43 +240,34 @@ export async function takePending<T>(db: ScopedDB, kind: PendingKind, groupId: s
 }
 
 /**
- * 更新/记录群成员活跃状态与最新昵称。
- * 支持内存防抖：同一群友在 throttleMs（默认 60 分钟）内的重复发言且昵称未改变时，直接跳过 D1 写入，极大节省写入额度。
- * @returns 是否实际触发了 D1 写入
+ * 记一次群友发言。今天已经记过且昵称没变就什么都不做；否则放进待写队列，
+ * 离这个群上次写入满 FLUSH_MS 才真的写（一次写入 1 行，带上期间攒下的所有人）。
+ * @param activeDays 超过这么多天没活跃的群友在写入时顺手剔掉
+ * @returns 这次是否写了 D1
  */
 export async function recordActiveUser(
   db: ScopedDB,
   groupId: string,
   userId: string,
   username: string,
-  throttleMs: number = 60 * 60 * 1000,
+  activeDays: number,
 ): Promise<boolean> {
   const now = Date.now()
-  const key = `${groupId}:${userId}`
-  const cached = activeCache.get(key)
-
-  // 命中防抖：冷却期内且昵称无变化，跳过 D1 写入
-  if (cached && now - cached.lastSeen < throttleMs && cached.username === username) {
-    return false
+  const today = beijingDay(now)
+  const state = await loadGroup(db, groupId, now)
+  const known = state.pending.get(userId) ?? state.members.get(userId)
+  if (!(known && known[1] === today && known[0] === username)) {
+    const entry: [string, number] = [username, today]
+    state.pending.set(userId, entry)
+    state.members.set(userId, entry)
   }
-
-  // 缓存容量保护，超出时淘汰最早加入的条目
-  if (activeCache.size >= MAX_CACHE_SIZE) {
-    const firstKey = activeCache.keys().next().value
-    if (firstKey) activeCache.delete(firstKey)
-  }
-
-  activeCache.set(key, { lastSeen: now, username })
-
-  await db.run(
-    `INSERT OR REPLACE INTO {active_users} (group_id, user_id, username, last_seen)
-     VALUES (?, ?, ?, ?);`,
-    groupId,
-    userId,
-    username,
-    now,
-  )
-  return true
+  if (!state.pending.size || now - state.lastFlush < FLUSH_MS) return false
+  // 同一个群同时只写一次；并发进来的消息等它写完再看要不要写
+  if (state.flushing) return state.flushing.then(() => false)
+  state.flushing = flushGroup(db, groupId, state, activeDays, now).finally(() => {
+    state.flushing = undefined
+  })
+  return state.flushing
 }
 
 /** 获取用户今日的老婆记录 */
@@ -183,33 +285,36 @@ export async function getTodayRecords(
   )
 }
 
-/** 从活跃池中随机抽取候选人 */
+/**
+ * 从活跃池中随机抽取候选人。重新读一次整群名单（1 行）再并上本 isolate 还没写进去的人，
+ * 抽到的都是真在名单里的；过期的、自己、黑名单都排除
+ */
 export async function drawCandidates(
   db: ScopedDB,
   groupId: string,
   userId: string,
-  activeLimitTs: number,
+  activeDays: number,
   excludedIds: string[],
   count: number = 1,
 ): Promise<ActiveUserRow[]> {
-  // 过滤掉当前用户与黑名单
-  const allExcluded = new Set([...excludedIds, userId, '0'])
-  const rows = await db.all<ActiveUserRow>(
-    'SELECT * FROM {active_users} WHERE group_id = ? AND last_seen >= ? ORDER BY RANDOM() LIMIT ?;',
-    groupId,
-    activeLimitTs,
-    count * 5, // 多取一些在内存中准确过滤
-  )
+  const now = Date.now()
+  const { members } = await readGroup(db, groupId)
+  for (const [id, v] of groups.get(groupId)?.pending ?? []) members.set(id, v)
 
-  const candidates: ActiveUserRow[] = []
-  for (const row of rows) {
-    if (!allExcluded.has(row.user_id)) {
-      candidates.push(row)
-      if (candidates.length >= count) break
+  const oldest = beijingDay(now) - activeDays
+  const allExcluded = new Set([...excludedIds, userId, '0'])
+  const pool: ActiveUserRow[] = []
+  for (const [id, [username, day]] of members) {
+    if (day >= oldest && !allExcluded.has(id)) {
+      pool.push({ group_id: groupId, user_id: id, username, last_seen: day * 86400000 - 8 * 3600 * 1000 })
     }
   }
-
-  return candidates
+  // 洗牌取前 count 个
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[pool[i], pool[j]] = [pool[j]!, pool[i]!]
+  }
+  return pool.slice(0, count)
 }
 
 /** 添加一条今日抽取/强娶/挑选记录 */

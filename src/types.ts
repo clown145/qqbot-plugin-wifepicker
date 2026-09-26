@@ -19,12 +19,11 @@ export interface WifePickerConfig {
   excluded_users: string[]
   /** 不能被强娶的 openid 列表 */
   force_marry_excluded_users: string[]
-  /** 活跃群友记录的防抖间隔（分钟），同一群友在此时间内的多次发言不会重复写入 D1，默认 60 */
-  active_user_throttle_minutes: number
-  /** 是否仅记录 @机器人的消息（为 true 时忽略普通群聊水群消息，极大节省写入额度），默认 false */
+  /** 是否仅记录 @机器人的消息（为 true 时忽略普通群聊消息），默认 false */
   only_record_at_message: boolean
 }
 
+/** 活跃群友（旧版 {active_users} 表的一行，也是抽取结果的形状；last_seen 为毫秒） */
 export interface ActiveUserRow {
   group_id: string
   user_id: string

@@ -52,18 +52,10 @@ export default definePlugin<WifePickerConfig>({
         items: { type: 'string' },
         default: [],
       },
-      active_user_throttle_minutes: {
-        type: 'integer',
-        title: '活跃成员刷库防抖间隔（分钟）',
-        description: '同一群友在此时间内的重复发言不会写入 D1，大幅节省数据库写入配额。默认 60 分钟。',
-        default: 60,
-        minimum: 1,
-        maximum: 1440,
-      },
       only_record_at_message: {
         type: 'boolean',
         title: '仅记录 @机器人的消息',
-        description: '开启后只记录 @机器人的群友作为活跃成员，忽略普通群聊水群消息，极大节省写入额度。默认关闭。',
+        description: '开启后只把 @机器人的群友算作活跃成员，普通群聊消息不看。活跃名单按天记、一个群一行，本来就很省写入，一般不用开。默认关闭。',
         default: false,
       },
     },
@@ -81,7 +73,6 @@ export default definePlugin<WifePickerConfig>({
     auto_set_other_half: false,
     excluded_users: [],
     force_marry_excluded_users: [],
-    active_user_throttle_minutes: 60,
     only_record_at_message: false,
   },
 
@@ -95,18 +86,16 @@ export default definePlugin<WifePickerConfig>({
   },
 
   events: {
-    // 监听群消息与 @消息，持续静默维护活跃群友池（防抖写入 D1）
+    // 监听群消息与 @消息，静默维护活跃群友池（按天记、一个群一行、攒一会儿再写，见 db.ts）
     'qq.group.at_message': async ({ session, ctx }) => {
       if (session.scene === 'group' && session.targetId && session.userId) {
-        const throttleMs = (ctx.config.active_user_throttle_minutes || 60) * 60 * 1000
-        ctx.waitUntil(recordActiveUser(ctx.db, session.targetId, session.userId, session.userName || '群友', throttleMs))
+        ctx.waitUntil(recordActiveUser(ctx.db, session.targetId, session.userId, session.userName || '群友', ctx.config.active_user_days))
       }
     },
     'qq.group.message': async ({ session, ctx }) => {
       if (ctx.config.only_record_at_message) return
       if (session.scene === 'group' && session.targetId && session.userId) {
-        const throttleMs = (ctx.config.active_user_throttle_minutes || 60) * 60 * 1000
-        ctx.waitUntil(recordActiveUser(ctx.db, session.targetId, session.userId, session.userName || '群友', throttleMs))
+        ctx.waitUntil(recordActiveUser(ctx.db, session.targetId, session.userId, session.userName || '群友', ctx.config.active_user_days))
       }
     },
   },
@@ -125,7 +114,7 @@ export default definePlugin<WifePickerConfig>({
         const today = getBeijingDateString(session.timestamp)
 
         // 触发时顺带清理过期数据
-        ctx.waitUntil(lazyCleanup(ctx.db, ctx.config.active_user_days))
+        ctx.waitUntil(lazyCleanup(ctx.db))
 
         // 检查是否处于分手冷静期
         const breakupCd = await getCooldown(ctx.db, groupId, userId, 'breakup')
@@ -151,9 +140,8 @@ export default definePlugin<WifePickerConfig>({
         }
 
         // 从活跃池中筛选候选人
-        const activeLimitTs = Date.now() - ctx.config.active_user_days * 86400 * 1000
         const excluded = ctx.config.excluded_users || []
-        const candidates = await drawCandidates(ctx.db, groupId, userId, activeLimitTs, excluded, 1)
+        const candidates = await drawCandidates(ctx.db, groupId, userId, ctx.config.active_user_days, excluded, 1)
 
         if (candidates.length === 0) {
           return `😿 本群近 ${ctx.config.active_user_days} 天内活跃的群友太少了，抽不出老婆，多让群友们在群里聊聊天吧~`
@@ -278,7 +266,7 @@ export default definePlugin<WifePickerConfig>({
           }
         }
 
-        ctx.waitUntil(lazyCleanup(ctx.db, ctx.config.active_user_days))
+        ctx.waitUntil(lazyCleanup(ctx.db))
 
         return {
           text: `💥 恭喜你霸王硬上弓！成功强娶群友【${target.username}】！\n(你已进入 ${ctx.config.force_marry_cd_days} 天强娶冷却期)`,
@@ -304,9 +292,8 @@ export default definePlugin<WifePickerConfig>({
           return `⚠️ 你今天的抽老婆次数已满（${todayRecords.length}/${ctx.config.daily_limit} 次），不能再挑选了哦~`
         }
 
-        const activeLimitTs = Date.now() - ctx.config.active_user_days * 86400 * 1000
         const count = Math.min(6, Math.max(2, ctx.config.pick_candidate_count || 3))
-        const candidates = await drawCandidates(ctx.db, groupId, userId, activeLimitTs, ctx.config.excluded_users || [], count)
+        const candidates = await drawCandidates(ctx.db, groupId, userId, ctx.config.active_user_days, ctx.config.excluded_users || [], count)
 
         if (candidates.length < 2) {
           return `😿 本群近期活跃人数太少（仅找到 ${candidates.length} 位），无法凑成挑选池，建议直接使用 /今日老婆 抽取！`

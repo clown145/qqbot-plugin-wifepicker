@@ -1,21 +1,40 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMockSession, runButton, runCommand } from '@qqbot/sdk/testing'
 import type { ScopedDB } from '@qqbot/sdk'
+import { clearActiveUserCache } from './db.js'
 import plugin from './index.js'
 import type { ActiveUserRow, CooldownRow, RbqRankingRow, WifeRecordRow } from './types.js'
 import { getBeijingDateString } from './utils.js'
 
-function createMemoryDB(): ScopedDB {
+/** members：群号 → 名单 JSON，外面可以直接看、直接改（模拟别的 isolate 写入）；writes 数对它的写入次数 */
+function createMemoryDB(): ScopedDB & { members: Map<string, string>; writes: { members: number } } {
   const activeUsers = new Map<string, ActiveUserRow>()
+  const members = new Map<string, string>()
+  const writes = { members: 0 }
   const records: WifeRecordRow[] = []
   const cooldowns = new Map<string, CooldownRow>()
   const pending = new Map<string, { data: string; expire_at: number }>()
   let recordAutoId = 1
 
   return {
+    members,
+    writes,
     table: (n) => `p_wifepicker_${n}`,
     exec: async () => {},
     run: async (sql, ...params) => {
+      // 整群名单：与 json_patch 一致，值为 null 的键删掉，其余覆盖
+      if (sql.includes('INSERT INTO {members}')) {
+        const [groupId, patch] = params as [string, string]
+        const doc = JSON.parse(members.get(groupId) ?? '{}') as Record<string, unknown>
+        for (const [k, v] of Object.entries(JSON.parse(patch) as Record<string, unknown>)) {
+          if (v === null) delete doc[k]
+          else doc[k] = v
+        }
+        members.set(groupId, JSON.stringify(doc))
+        writes.members++
+        return { changes: 1 }
+      }
+
       // 0. 挑选/求婚的待定状态
       if (sql.includes('INSERT OR REPLACE INTO {pending}')) {
         const [kind, groupId, userId, data, expireAt] = params as [string, string, string, string, number]
@@ -131,16 +150,10 @@ function createMemoryDB(): ScopedDB {
     },
 
     all: async <T>(sql: string, ...params: unknown[]) => {
-      // 1. active_users 随机查询
+      // 1. 升级前的 active_users：新表里还没有这个群时捞一次
       if (sql.includes('FROM {active_users}')) {
-        const [groupId, activeLimitTs] = params as [string, number]
-        const list: ActiveUserRow[] = []
-        for (const u of activeUsers.values()) {
-          if (u.group_id === groupId && u.last_seen >= activeLimitTs) {
-            list.push(u)
-          }
-        }
-        return list as T[]
+        const [groupId] = params as [string]
+        return [...activeUsers.values()].filter((u) => u.group_id === groupId) as T[]
       }
 
       // 2. records 今日查询
@@ -170,6 +183,11 @@ function createMemoryDB(): ScopedDB {
     },
 
     first: async <T>(sql: string, ...params: unknown[]) => {
+      if (sql.includes('FROM {members}')) {
+        const data = members.get(params[0] as string)
+        return (data === undefined ? null : { data }) as T | null
+      }
+
       // 取出并删掉待定状态（DELETE … RETURNING data）
       if (sql.includes('DELETE FROM {pending}')) {
         const [kind, groupId, userId, now] = params as [string, string, string, number]
@@ -195,6 +213,9 @@ function createMemoryDB(): ScopedDB {
 }
 
 describe('qflarebot-plugin-wifepicker', () => {
+  // 名单缓存是模块级的，别让上一条测试的群友漏进下一条
+  beforeEach(() => clearActiveUserCache())
+
   it('帮助指令 /抽老婆帮助 返回指令列表', async () => {
     const session = await runCommand(plugin, '抽老婆帮助')
     expect(session.replies).toHaveLength(1)
@@ -411,47 +432,91 @@ describe('qflarebot-plugin-wifepicker', () => {
     expect(reply.markdown.content).toContain('`2` 次')
   })
 
-  it('recordActiveUser 支持内存防抖与昵称变更识别', async () => {
-    const { clearActiveUserCache, recordActiveUser } = await import('./db.js')
-    clearActiveUserCache()
+  describe('活跃群友：按天记、一个群一行、攒一会儿再写', () => {
+    const MIN = 60 * 1000
+    const DAY = 24 * 60 * MIN
+    // 北京时间 2026-09-26 12:00
+    const NOON = Date.UTC(2026, 8, 26, 4, 0, 0)
 
-    let writeCount = 0
-    const db: ScopedDB = {
-      table: (n) => `p_wifepicker_${n}`,
-      exec: async () => {},
-      run: async () => {
-        writeCount++
-        return { changes: 1 }
-      },
-      all: async () => [],
-      first: async () => null,
-    }
+    beforeEach(async () => {
+      ;(await import('./db.js')).clearActiveUserCache()
+      vi.useFakeTimers()
+      vi.setSystemTime(NOON)
+    })
+    afterEach(() => vi.useRealTimers())
 
-    // 1. 首次发言：写入 D1
-    const res1 = await recordActiveUser(db, 'group-1', 'user-1', 'Alice', 60 * 1000)
-    expect(res1).toBe(true)
-    expect(writeCount).toBe(1)
+    it('同一个人一天只记一次，说多少句都不再写', async () => {
+      const { recordActiveUser } = await import('./db.js')
+      const db = createMemoryDB()
+      expect(await recordActiveUser(db, 'g', 'u1', 'Alice', 30)).toBe(true)
+      for (let i = 0; i < 50; i++) {
+        vi.advanceTimersByTime(10 * MIN)
+        await recordActiveUser(db, 'g', 'u1', 'Alice', 30)
+      }
+      expect(db.writes.members).toBe(1)
+    })
 
-    // 2. 冷却期内同用户同昵称再次发言：防抖拦截，不写 D1
-    const res2 = await recordActiveUser(db, 'group-1', 'user-1', 'Alice', 60 * 1000)
-    expect(res2).toBe(false)
-    expect(writeCount).toBe(1)
+    it('新来的人攒在内存里，同一个群最多每 5 分钟写一次，一次带上所有人', async () => {
+      const { recordActiveUser } = await import('./db.js')
+      const db = createMemoryDB()
+      await recordActiveUser(db, 'g', 'u1', 'Alice', 30)
+      for (const [id, name] of [['u2', 'Bob'], ['u3', 'Carol'], ['u1', 'Alice改名']]) {
+        vi.advanceTimersByTime(MIN)
+        expect(await recordActiveUser(db, 'g', id!, name!, 30)).toBe(false)
+      }
+      expect(db.writes.members).toBe(1)
+      vi.advanceTimersByTime(3 * MIN)
+      expect(await recordActiveUser(db, 'g', 'u2', 'Bob', 30)).toBe(true)
+      expect(db.writes.members).toBe(2)
+      expect(Object.keys(JSON.parse(db.members.get('g')!)).sort()).toEqual(['u1', 'u2', 'u3'])
+      expect(JSON.parse(db.members.get('g')!).u1[0]).toBe('Alice改名')
+    })
 
-    // 3. 同用户更改昵称发言：立即刷新 D1
-    const res3 = await recordActiveUser(db, 'group-1', 'user-1', 'AliceNew', 60 * 1000)
-    expect(res3).toBe(true)
-    expect(writeCount).toBe(2)
+    it('第二天再说话会更新日期；超过活跃天数的人写入时顺手剔掉', async () => {
+      const { beijingDay, recordActiveUser } = await import('./db.js')
+      const db = createMemoryDB()
+      const today = beijingDay(NOON)
+      db.members.set('g', JSON.stringify({ old: ['老人', today - 31], keep: ['还在', today - 30] }))
+      await recordActiveUser(db, 'g', 'u1', 'Alice', 30)
+      expect(JSON.parse(db.members.get('g')!)).toEqual({ keep: ['还在', today - 30], u1: ['Alice', today] })
 
-    // 4. 不同群友发言：独立记录
-    const res4 = await recordActiveUser(db, 'group-1', 'user-2', 'Bob', 60 * 1000)
-    expect(res4).toBe(true)
-    expect(writeCount).toBe(3)
+      vi.advanceTimersByTime(DAY)
+      await recordActiveUser(db, 'g', 'u1', 'Alice', 30)
+      expect(JSON.parse(db.members.get('g')!).u1).toEqual(['Alice', today + 1])
+    })
 
-    // 5. 清理缓存后再次发言：重新写入 D1
-    clearActiveUserCache()
-    const res5 = await recordActiveUser(db, 'group-1', 'user-1', 'AliceNew', 60 * 1000)
-    expect(res5).toBe(true)
-    expect(writeCount).toBe(4)
+    it('写入前重读一次，别的 isolate 刚写进去的人不会被冲掉', async () => {
+      const { beijingDay, recordActiveUser } = await import('./db.js')
+      const db = createMemoryDB()
+      await recordActiveUser(db, 'g', 'u1', 'Alice', 30)
+      // 另一个 isolate 写进来一个人
+      db.members.set('g', JSON.stringify({ ...JSON.parse(db.members.get('g')!), other: ['别处', beijingDay(NOON)] }))
+      vi.advanceTimersByTime(6 * MIN)
+      await recordActiveUser(db, 'g', 'u2', 'Bob', 30)
+      expect(Object.keys(JSON.parse(db.members.get('g')!)).sort()).toEqual(['other', 'u1', 'u2'])
+    })
+
+    it('升级前旧表里的群友照样抽得到，第一次写入时并进新表', async () => {
+      const { recordActiveUser } = await import('./db.js')
+      const db = createMemoryDB()
+      await db.run('INSERT INTO {active_users} (group_id, user_id, username, last_seen) VALUES (?, ?, ?, ?);', 'g', 'legacy', '老用户', NOON - 2 * DAY)
+      await db.run('INSERT INTO {active_users} (group_id, user_id, username, last_seen) VALUES (?, ?, ?, ?);', 'g', 'stale', '早就不来了', NOON - 40 * DAY)
+      await recordActiveUser(db, 'g', 'u1', 'Alice', 30)
+      expect(Object.keys(JSON.parse(db.members.get('g')!)).sort()).toEqual(['legacy', 'u1'])
+    })
+
+    it('抽取从整群名单里挑，算上还没写进去的人，排除自己、黑名单与过期的', async () => {
+      const { beijingDay, drawCandidates, recordActiveUser } = await import('./db.js')
+      const db = createMemoryDB()
+      const today = beijingDay(NOON)
+      db.members.set('g', JSON.stringify({ me: ['我', today], banned: ['黑名单', today], old: ['过期', today - 31], a: ['A', today] }))
+      await recordActiveUser(db, 'g', 'me', '我', 30)
+      vi.advanceTimersByTime(MIN)
+      await recordActiveUser(db, 'g', 'fresh', '刚来', 30)
+      const picked = await drawCandidates(db, 'g', 'me', 30, ['banned'], 10)
+      expect(picked.map((p) => p.user_id).sort()).toEqual(['a', 'fresh'])
+      expect(picked.find((p) => p.user_id === 'fresh')?.username).toBe('刚来')
+    })
   })
 
   it('插件声明了正确的 bare 与 permission 规范，且 isGroupAdmin 识别 session.memberRole', async () => {

@@ -1,6 +1,6 @@
 {
   "name": "wifepicker",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "apiVersion": 1,
   "permissions": [
     "db"
@@ -200,18 +200,10 @@
         },
         "default": []
       },
-      "active_user_throttle_minutes": {
-        "type": "integer",
-        "title": "活跃成员刷库防抖间隔（分钟）",
-        "description": "同一群友在此时间内的重复发言不会写入 D1，大幅节省数据库写入配额。默认 60 分钟。",
-        "default": 60,
-        "minimum": 1,
-        "maximum": 1440
-      },
       "only_record_at_message": {
         "type": "boolean",
         "title": "仅记录 @机器人的消息",
-        "description": "开启后只记录 @机器人的群友作为活跃成员，忽略普通群聊水群消息，极大节省写入额度。默认关闭。",
+        "description": "开启后只把 @机器人的群友算作活跃成员，普通群聊消息不看。活跃名单按天记、一个群一行，本来就很省写入，一般不用开。默认关闭。",
         "default": false
       }
     },
@@ -232,7 +224,6 @@
     "auto_set_other_half": false,
     "excluded_users": [],
     "force_marry_excluded_users": [],
-    "active_user_throttle_minutes": 60,
     "only_record_at_message": false
   }
 }
